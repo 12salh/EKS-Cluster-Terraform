@@ -37,7 +37,7 @@ stages:
     - task: AWSCLI@1
       displayName: AWS Identity Check
       inputs:
-        awsCredentials: "aws-mohamedSaleh"
+        awsCredentials: "aws_mohamedSaleh"
         regionName: $(AWS_REGION)
         awsCommand: "sts"
         awsSubCommand: "get-caller-identity"
