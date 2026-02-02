@@ -24,7 +24,7 @@ variables:
 pool:
   name: Default        # اسم الـ Agent Pool في Azure DevOps
   demands:
-    - agent.name -equals MyEC2Agent   # اسم الـ agent على الـ EC2
+    - agent.name -equals mohamed-saleh  # اسم الـ agent على الـ EC2
 
 stages:
 - stage: Terraform
