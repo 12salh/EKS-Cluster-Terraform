@@ -19,12 +19,10 @@ variables:
   TF_STATE_KEY: "eks/terraform.tfstate"
 
 # -----------------------------
-# Use EC2 self-hosted agent
+# Use Microsoft-hosted agent
 # -----------------------------
 pool:
-  name: Default        # اسم الـ Agent Pool في Azure DevOps
-  demands:
-    - agent.name -equals mohamed-saleh  # اسم الـ agent على الـ EC2
+  vmImage: ubuntu-latest   # Azure DevOps chooses the agent
 
 stages:
 - stage: Terraform
