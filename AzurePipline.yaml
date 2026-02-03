@@ -15,14 +15,14 @@ parameters:
 variables:
   TF_VERSION: "1.6.6"
   AWS_REGION: "us-east-1"
-  TF_STATE_BUCKET: "your-terraform-state-bucket"
+  TF_STATE_BUCKET: "nti-terraform-states"
   TF_STATE_KEY: "eks/terraform.tfstate"
 
-# --------------------------------
-# استخدم الـ EC2 self-hosted agent
-# --------------------------------
+# -----------------------------
+# Use EC2 self-hosted agent
+# -----------------------------
 pool:
-  name: Self hosted pools       # اسم الـ Agent Pool اللي حطيته في Azure DevOps
+  name: Self hosted pools      # اسم الـ Agent Pool في Azure DevOps
   demands:
     - agent.name -equals ip-172-31-33-153   # اسم الـ agent على الـ EC2
 
@@ -45,53 +45,32 @@ stages:
     # -------------------------
     # Terraform Init (S3 backend)
     # -------------------------
-    - task: TerraformTaskV4@4
+    - script: |
+        terraform init \
+          -backend-config="bucket=$(TF_STATE_BUCKET)" \
+          -backend-config="key=$(TF_STATE_KEY)" \
+          -backend-config="region=$(AWS_REGION)"
       displayName: Terraform Init
-      inputs:
-        provider: aws
-        command: init
-        backendServiceAWS: aws_mohamedSaleh
-        backendAWSRegion: $(AWS_REGION)
-        backendAWSBucketName: nti-terraform-states
-        backendAWSKey: eks/terraform.tfstate
 
     # -------------------------
     # Terraform Validate
     # -------------------------
-    - task: TerraformTaskV4@4
+    - script: terraform validate
       displayName: Terraform Validate
-      inputs:
-        provider: aws
-        command: validate
 
     # -------------------------
     # Terraform Plan
     # -------------------------
-    - task: TerraformTaskV4@4
+    - script: terraform plan -out=tfplan
       displayName: Terraform Plan
-      inputs:
-        provider: aws
-        command: plan
-        environmentServiceNameAWS: aws_mohamedSaleh
-        commandOptions: "-out=tfplan"
 
     # -------------------------
     # Terraform Apply OR Destroy
     # -------------------------
     - ${{ if eq(parameters.action, 'apply') }}:
-      - task: TerraformTaskV4@4
+      - script: terraform apply -auto-approve tfplan
         displayName: Terraform Apply
-        inputs:
-          provider: aws
-          command: apply
-          environmentServiceNameAWS: aws_mohamedSaleh
-          commandOptions: "-auto-approve tfplan"
 
     - ${{ if eq(parameters.action, 'destroy') }}:
-      - task: TerraformTaskV4@4
+      - script: terraform destroy -auto-approve
         displayName: Terraform Destroy
-        inputs:
-          provider: aws
-          command: destroy
-          environmentServiceNameAWS: aws_mohamedSaleh
-          commandOptions: "-auto-approve"
