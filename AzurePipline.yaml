@@ -1,82 +1,97 @@
-trigger: none
-pr: none
+trigger:
+  branches:
+    include:
+      - main
 
 parameters:
-  - name: env
-    displayName: Environment
-    type: string
-    default: prod
-    values: [nonprod, prod]
-
-  - name: destroy
-    displayName: Destroy
-    type: boolean
-    default: false
+- name: action
+  displayName: Terraform Action
+  type: string
+  default: apply
+  values:
+    - apply
+    - destroy
 
 variables:
-  TF_DIR: terraform
-  TF_VAR_FILE: '${{ parameters.env }}.tfvars'
-  AWS_SERVICE_CONNECTION: aws_mohamedSaleh
-  AWS_REGION: us-east-1
+  TF_VERSION: "1.6.6"
+  AWS_REGION: "us-east-1"
+  TF_STATE_BUCKET: "your-terraform-state-bucket"
+  TF_STATE_KEY: "eks/terraform.tfstate"
+
+# --------------------------------
+# استخدم الـ EC2 self-hosted agent
+# --------------------------------
+pool:
+  name: Self hosted pools       # اسم الـ Agent Pool اللي حطيته في Azure DevOps
+  demands:
+    - agent.name -equals ip-172-31-33-153   # اسم الـ agent على الـ EC2
 
 stages:
-  - stage: Infra
-    displayName: Infra (Terraform)
-    jobs:
-      - job: Terraform
-        displayName: Terraform
-        pool:
-          name: default
-        steps:
-          - checkout: self
+- stage: Terraform
+  displayName: Terraform Infrastructure
+  jobs:
+  - job: TerraformJob
+    displayName: Terraform Apply or Destroy
+    steps:
 
-          - task: TerraformInstaller@1
-            displayName: Install Terraform
-            inputs:
-              terraformVersion: latest
+    # -------------------------
+    # Install Terraform
+    # -------------------------
+    - task: TerraformInstaller@1
+      displayName: Install Terraform
+      inputs:
+        terraformVersion: $(TF_VERSION)
 
-          - task: AWSShellScript@1
-            displayName: Terraform init
-            inputs:
-              awsCredentials: $(AWS_SERVICE_CONNECTION)
-              regionName: $(AWS_REGION)
-              scriptType: inline
-              inlineScript: |
-                set -euo pipefail
-                cd "$(TF_DIR)"
-                terraform init -input=false
+    # -------------------------
+    # Terraform Init (S3 backend)
+    # -------------------------
+    - task: TerraformTaskV4@4
+      displayName: Terraform Init
+      inputs:
+        provider: aws
+        command: init
+        backendServiceAWS: aws_mohamedSaleh
+        backendAWSRegion: $(AWS_REGION)
+        backendAWSBucketName: nti-terraform-states
+        backendAWSKey: eks/terraform.tfstate
 
-          - task: AWSShellScript@1
-            displayName: Terraform plan
-            condition: eq('${{ parameters.destroy }}', false)
-            inputs:
-              awsCredentials: $(AWS_SERVICE_CONNECTION)
-              regionName: $(AWS_REGION)
-              scriptType: inline
-              inlineScript: |
-                set -euo pipefail
-                cd "$(TF_DIR)"
-                terraform plan -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
+    # -------------------------
+    # Terraform Validate
+    # -------------------------
+    - task: TerraformTaskV4@4
+      displayName: Terraform Validate
+      inputs:
+        provider: aws
+        command: validate
 
-          - task: AWSShellScript@1
-            displayName: Terraform plan -destroy
-            condition: eq('${{ parameters.destroy }}', true)
-            inputs:
-              awsCredentials: $(AWS_SERVICE_CONNECTION)
-              regionName: $(AWS_REGION)
-              scriptType: inline
-              inlineScript: |
-                set -euo pipefail
-                cd "$(TF_DIR)"
-                terraform plan -destroy -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
+    # -------------------------
+    # Terraform Plan
+    # -------------------------
+    - task: TerraformTaskV4@4
+      displayName: Terraform Plan
+      inputs:
+        provider: aws
+        command: plan
+        environmentServiceNameAWS: aws_mohamedSaleh
+        commandOptions: "-out=tfplan"
 
-          - task: AWSShellScript@1
-            displayName: Terraform apply
-            inputs:
-              awsCredentials: $(AWS_SERVICE_CONNECTION)
-              regionName: $(AWS_REGION)
-              scriptType: inline
-              inlineScript: |
-                set -euo pipefail
-                cd "$(TF_DIR)"
-                terraform apply -auto-approve -input=false tfplan
+    # -------------------------
+    # Terraform Apply OR Destroy
+    # -------------------------
+    - ${{ if eq(parameters.action, 'apply') }}:
+      - task: TerraformTaskV4@4
+        displayName: Terraform Apply
+        inputs:
+          provider: aws
+          command: apply
+          environmentServiceNameAWS: aws_mohamedSaleh
+          commandOptions: "-auto-approve tfplan"
+
+    - ${{ if eq(parameters.action, 'destroy') }}:
+      - task: TerraformTaskV4@4
+        displayName: Terraform Destroy
+        inputs:
+          provider: aws
+          command: destroy
+          environmentServiceNameAWS: aws_mohamedSaleh
+          commandOptions: "-auto-approve"
