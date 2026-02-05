@@ -24,7 +24,7 @@ variables:
 pool:
   name: Self hosted pools      # اسم الـ Agent Pool في Azure DevOps
   demands:
-    - agent.name -equals ip-172-31-33-153   # اسم الـ agent على الـ EC2
+    - agent.name -equals mo-saleh   # اسم الـ agent على الـ EC2
 
 stages:
 - stage: Terraform
