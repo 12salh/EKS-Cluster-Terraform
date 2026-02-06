@@ -17,11 +17,7 @@ variables:
   AWS_REGION: "us-east-1"
   TF_STATE_BUCKET: "nti-terraform-states"
   TF_STATE_KEY: "eks/terraform.tfstate"
-
-pool:
-  name: Self hosted pools
-  demands:
-    - agent.name -equals mo-saleh
+  AWS_CONNECTION: "aws_mohamedSaleh"   # اسم AWS Service Connection
 
 stages:
 - stage: Terraform
@@ -30,6 +26,16 @@ stages:
   - job: TerraformJob
     displayName: Terraform Apply or Destroy
     steps:
+
+    # -------------------------
+    # Configure AWS Credentials using Service Connection
+    # -------------------------
+    - task: AwsCli@1
+      displayName: Configure AWS Credentials
+      inputs:
+        awsCredentials: $(AWS_CONNECTION)
+        regionName: $(AWS_REGION)
+        command: 'sts get-caller-identity'
 
     # -------------------------
     # Install Terraform
@@ -74,22 +80,6 @@ stages:
           cd Cluster
           terraform apply -auto-approve tfplan
         displayName: Terraform Apply
-
-      # -------------------------
-      # Update kubeconfig & Check Nodes
-      # -------------------------
-      - script: |
-          cd Cluster
-          export KUBECONFIG=$(pwd)/kubeconfig
-          aws eks update-kubeconfig --region $(AWS_REGION) --name $(terraform output -raw cluster_name)
-          echo "Cluster Name: $(terraform output -raw cluster_name)"
-          echo "VPC ID: $(terraform output -raw vpc_id)"
-          echo "Public Subnets: $(terraform output -raw public_subnets)"
-          echo "Private Subnets: $(terraform output -raw private_subnets)"
-          echo "Node Groups:"
-          aws eks list-nodegroups --cluster-name $(terraform output -raw cluster_name) --region $(AWS_REGION)
-          kubectl get nodes -o wide
-        displayName: Update kubeconfig & Check Nodes
 
     - ${{ if eq(parameters.action, 'destroy') }}:
       - script: |
