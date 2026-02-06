@@ -17,7 +17,11 @@ variables:
   AWS_REGION: "us-east-1"
   TF_STATE_BUCKET: "nti-terraform-states"
   TF_STATE_KEY: "eks/terraform.tfstate"
-  AWS_CONNECTION: "aws_mohamedSaleh"   # اسم AWS Service Connection
+
+pool:
+  name: Self hosted pools
+  demands:
+    - agent.name -equals mo-saleh
 
 stages:
 - stage: Terraform
@@ -27,28 +31,13 @@ stages:
     displayName: Terraform Apply or Destroy
     steps:
 
-    # -------------------------
-    # Configure AWS Credentials using Service Connection
-    # -------------------------
-    - task: AwsCli@1
-      displayName: Configure AWS Credentials
-      inputs:
-        awsCredentials: $(AWS_CONNECTION)
-        regionName: $(AWS_REGION)
-        awsCommand: sts
-        awsSubCommand: get-caller-identity
-      
-      
-      # -------------------------
-    # Install Terraform
-    # -------------------------
     - task: TerraformInstaller@1
       displayName: Install Terraform
       inputs:
         terraformVersion: $(TF_VERSION)
 
     # -------------------------
-    # Terraform Init
+    # Terraform Init (S3 backend)
     # -------------------------
     - script: |
         cd Cluster
@@ -58,25 +47,16 @@ stages:
           -backend-config="region=$(AWS_REGION)"
       displayName: Terraform Init
 
-    # -------------------------
-    # Terraform Validate
-    # -------------------------
     - script: |
         cd Cluster
         terraform validate
       displayName: Terraform Validate
 
-    # -------------------------
-    # Terraform Plan
-    # -------------------------
     - script: |
         cd Cluster
         terraform plan -out=tfplan
       displayName: Terraform Plan
 
-    # -------------------------
-    # Terraform Apply or Destroy
-    # -------------------------
     - ${{ if eq(parameters.action, 'apply') }}:
       - script: |
           cd Cluster
