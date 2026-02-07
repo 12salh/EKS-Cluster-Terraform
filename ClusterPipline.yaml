@@ -21,7 +21,7 @@ variables:
 pool:
   name: Self hosted pools
   demands:
-    - agent.name -equals mo-saleh
+    - agent.name -equals ip-172-31-39-167
 
 stages:
 - stage: Terraform
