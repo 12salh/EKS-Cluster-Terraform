@@ -52,3 +52,16 @@ resource "aws_eks_cluster" "this" {
     aws_iam_role_policy_attachment.eks_cluster_policy
   ]
 }
+
+# انتظار الكلاستر يبقى ACTIVE قبل إنشاء الـ Node Group (عشان الـ nodes تظهر)
+resource "null_resource" "wait_for_cluster" {
+  depends_on = [aws_eks_cluster.this]
+
+  provisioner "local-exec" {
+    command = "aws eks wait cluster-active --name ${aws_eks_cluster.this.name} --region ${data.aws_region.current.name}"
+  }
+
+  triggers = {
+    cluster_name = aws_eks_cluster.this.name
+  }
+}
