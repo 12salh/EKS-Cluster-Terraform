@@ -11,8 +11,10 @@ pipeline {
 
     environment {
         AWS_DEFAULT_REGION = 'us-east-1'
-        TF_STATE_BUCKET   = 'nti-terraform-states-1'
-        TF_STATE_KEY      = 'eks/nonprod/terraform.tfstate'
+        TF_STATE_BUCKET   = 'nti-terraform-states'
+        TF_STATE_KEY      = 'eks/terraform.tfstate'
+        WORK_DIR          = 'Ingress'
+        CLUSTER_NAME      = 'nti-nonprod-eks'
     }
 
     stages {
@@ -28,15 +30,23 @@ pipeline {
 
         stage('Terraform Init') {
             steps {
-                withCredentials([[ $class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred' ]]) {
-                    dir('Ingress') {
-                        sh '''
-                        terraform init \
-                          -backend-config="bucket=${TF_STATE_BUCKET}" \
-                          -backend-config="key=${TF_STATE_KEY}" \
-                          -backend-config="region=${AWS_DEFAULT_REGION}"
-                        '''
+                dir("${WORK_DIR}") {
+                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+                        sh """
+                          terraform init \
+                            -backend-config="bucket=${TF_STATE_BUCKET}" \
+                            -backend-config="key=${TF_STATE_KEY}" \
+                            -backend-config="region=${AWS_DEFAULT_REGION}"
+                        """
                     }
+                }
+            }
+        }
+
+        stage('Terraform Validate') {
+            steps {
+                dir("${WORK_DIR}") {
+                    sh 'terraform validate'
                 }
             }
         }
@@ -44,8 +54,8 @@ pipeline {
         stage('Terraform Plan') {
             when { expression { params.ACTION == 'apply' } }
             steps {
-                withCredentials([[ $class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred' ]]) {
-                    dir('Ingress') {
+                dir("${WORK_DIR}") {
+                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
                         sh 'terraform plan -out=tfplan'
                     }
                 }
@@ -55,8 +65,8 @@ pipeline {
         stage('Terraform Apply') {
             when { expression { params.ACTION == 'apply' } }
             steps {
-                withCredentials([[ $class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred' ]]) {
-                    dir('Ingress') {
+                dir("${WORK_DIR}") {
+                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
                         sh 'terraform apply -auto-approve tfplan'
                     }
                 }
@@ -64,16 +74,21 @@ pipeline {
         }
 
         stage('Install Argo CD & Ingress') {
-            when {
-            expression { params.ACTION == 'apply' }
-            }
+            when { expression { params.ACTION == 'apply' } }
             steps {
                 dir("${WORK_DIR}") {
                     withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
                         sh """
+                            # تحديث kubeconfig عشان kubectl يشتغل
                             aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${CLUSTER_NAME}
+
+                            # إنشاء namespace Argo CD لو مش موجود
                             kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+
+                            # تطبيق ملفات Argo CD manifests
                             kubectl apply -f argocd-manifest.yaml
+
+                            # تثبيت أو تحديث Nginx Ingress عبر Helm
                             helm upgrade --install nginx-ingress ingress-nginx --namespace ingress-nginx -f nginx-values.yaml
                         """
                     }
@@ -81,17 +96,15 @@ pipeline {
             }
         }
 
-
         stage('Terraform Destroy') {
             when { expression { params.ACTION == 'destroy' } }
             steps {
-                withCredentials([[ $class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred' ]]) {
-                    dir('Ingress') {
+                dir("${WORK_DIR}") {
+                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
                         sh 'terraform destroy -auto-approve'
                     }
                 }
             }
         }
-
     }
 }
