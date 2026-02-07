@@ -1,63 +1,94 @@
-trigger:
-  branches:
-    include:
-      - main
+pipeline {
+    agent any
 
-parameters:
-- name: action
-  displayName: Terraform Action
-  type: string
-  default: apply
-  values:
-    - apply
-    - destroy
+    parameters {
+        choice(
+            name: 'ACTION',
+            choices: ['apply', 'destroy'],
+            description: 'Terraform Action'
+        )
+    }
 
-variables:
-  TF_VERSION: "1.6.6"
-  WORK_DIR: "Ingress"
-  AWS_REGION: "us-east-1"
-  TF_STATE_BUCKET: "nti-terraform-states-1"
-  TF_STATE_KEY: "eks/nonprod/terraform.tfstate"
+    environment {
+        TF_VERSION       = '1.6.6'
+        WORK_DIR         = 'Ingress'
+        AWS_DEFAULT_REGION = 'us-east-1'
+        TF_STATE_BUCKET  = 'nti-terraform-states-1'
+        TF_STATE_KEY     = 'eks/nonprod/terraform.tfstate'
+    }
 
-pool:
-  name: Self hosted pools
-  demands:
-    - agent.name -equals mo-saleh
+    stages {
 
-stages:
-- stage: Terraform
-  displayName: Ingress Terraform
-  jobs:
-  - job: TerraformJob
-    steps:
-    - checkout: self
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
 
-    - task: TerraformInstaller@1
-      inputs:
-        terraformVersion: $(TF_VERSION)
+        stage('Terraform Init') {
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws_cred'
+                ]]) {
+                    dir("${WORK_DIR}") {
+                        sh '''
+                          terraform init \
+                            -backend-config="bucket=${TF_STATE_BUCKET}" \
+                            -backend-config="key=${TF_STATE_KEY}" \
+                            -backend-config="region=${AWS_DEFAULT_REGION}"
+                        '''
+                    }
+                }
+            }
+        }
 
-    - script: |
-        cd $(WORK_DIR)
-        terraform init \
-          -backend-config="bucket=$(TF_STATE_BUCKET)" \
-          -backend-config="key=$(TF_STATE_KEY)" \
-          -backend-config="region=$(AWS_REGION)"
-      displayName: Terraform Init
+        stage('Terraform Plan') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws_cred'
+                ]]) {
+                    dir("${WORK_DIR}") {
+                        sh 'terraform plan -out=tfplan'
+                    }
+                }
+            }
+        }
 
-    - script: |
-        cd $(WORK_DIR)
-        terraform plan -out=tfplan
-      condition: eq('${{ parameters.action }}', 'apply')
-      displayName: Terraform Plan
+        stage('Terraform Apply') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws_cred'
+                ]]) {
+                    dir("${WORK_DIR}") {
+                        sh 'terraform apply -auto-approve tfplan'
+                    }
+                }
+            }
+        }
 
-    - script: |
-        cd $(WORK_DIR)
-        terraform apply -auto-approve tfplan
-      condition: eq('${{ parameters.action }}', 'apply')
-      displayName: Terraform Apply
-
-    - script: |
-        cd $(WORK_DIR)
-        terraform destroy -auto-approve
-      condition: eq('${{ parameters.action }}', 'destroy')
-      displayName: Terraform Destroy
+        stage('Terraform Destroy') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws_cred'
+                ]]) {
+                    dir("${WORK_DIR}") {
+                        sh 'terraform destroy -auto-approve'
+                    }
+                }
+            }
+        }
+    }
+}
