@@ -1,128 +1,163 @@
 pipeline {
-    agent any
+  agent any
 
-    parameters {
-        choice(
-            name: 'ACTION',
-            choices: ['apply', 'destroy'],
-            description: 'Terraform Action'
-        )
+  parameters {
+    choice(
+      name: 'ACTION',
+      choices: ['apply', 'destroy'],
+      description: 'Terraform Action'
+    )
+  }
+
+  environment {
+    AWS_DEFAULT_REGION = 'us-east-1'
+    CLUSTER_NAME       = 'nti-nonprod-eks'
+
+    TF_STATE_BUCKET = 'nti-terraform-states-1'
+    TF_STATE_KEY    = 'eks/nonprod/terraform.tfstate'
+
+    // مسار kubeconfig داخل الـ workspace
+    KUBECONFIG_PATH = "${env.WORKSPACE}/kubeconfig"
+
+    // لو بتستخدم Proxy، فعّل وضبط NO_PROXY هنا
+    // NO_PROXY = "127.0.0.1,localhost,svc,.svc,cluster.local,.cluster.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,gr7.us-east-1.eks.amazonaws.com"
+  }
+
+  stages {
+
+    stage('Checkout') {
+      steps { checkout scm }
     }
 
-    environment {
-        AWS_DEFAULT_REGION = 'us-east-1'
-        CLUSTER_NAME = 'nti-nonprod-eks'
-
-        TF_STATE_BUCKET = 'nti-terraform-states-1'
-        TF_STATE_KEY    = 'eks/nonprod/terraform.tfstate'
+    stage('Terraform Init') {
+      steps {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+          dir('Ingress') {
+            sh '''
+              set -euxo pipefail
+              terraform init -reconfigure \
+                -backend-config="bucket=${TF_STATE_BUCKET}" \
+                -backend-config="key=${TF_STATE_KEY}" \
+                -backend-config="region=${AWS_DEFAULT_REGION}"
+            '''
+          }
+        }
+      }
     }
 
-    stages {
-
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
+    stage('Terraform Plan') {
+      when { expression { params.ACTION == 'apply' } }
+      steps {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+          dir('Ingress') {
+            sh '''
+              set -euxo pipefail
+              terraform plan -out=tfplan
+            '''
+          }
         }
-
-        stage('Terraform Init') {
-            steps {
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']
-                ]) {
-                    dir('Ingress') {
-                        sh '''
-                          terraform init -reconfigure \
-                            -backend-config="bucket=${TF_STATE_BUCKET}" \
-                            -backend-config="key=${TF_STATE_KEY}" \
-                            -backend-config="region=${AWS_DEFAULT_REGION}"
-                        '''
-                    }
-                }
-            }
-        }
-
-        stage('Terraform Plan') {
-            when { expression { params.ACTION == 'apply' } }
-            steps {
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']
-                ]) {
-                    dir('Ingress') {
-                        sh 'terraform plan -out=tfplan'
-                    }
-                }
-            }
-        }
-
-        stage('Terraform Apply') {
-            when { expression { params.ACTION == 'apply' } }
-            steps {
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']
-                ]) {
-                    dir('Ingress') {
-                        sh 'terraform apply -auto-approve tfplan'
-                    }
-                }
-            }
-        }
-
-        stage('Configure kubeconfig') {
-            when { expression { params.ACTION == 'apply' } }
-            steps {
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']
-                ]) {
-                    sh '''
-                      aws eks update-kubeconfig \
-                        --region ${AWS_DEFAULT_REGION} \
-                        --name ${CLUSTER_NAME}
-
-                      kubectl get nodes
-                    '''
-                }
-            }
-        }
-
-        stage('Install Argo CD (Helm)') {
-            when { expression { params.ACTION == 'apply' } }
-            steps {
-                sh '''
-                  kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-
-                  helm repo add argo https://argoproj.github.io/argo-helm
-                  helm repo update
-
-                  helm upgrade --install argocd argo/argo-cd \
-                    --namespace argocd \
-                    --create-namespace \
-                    --wait
-                '''
-            }
-        }
-
-        stage('Uninstall Argo CD (before destroy)') {
-            when { expression { params.ACTION == 'destroy' } }
-            steps {
-                sh '''
-                  helm uninstall argocd -n argocd || true
-                  kubectl delete namespace argocd --wait=false || true
-                '''
-            }
-        }
-
-        stage('Terraform Destroy') {
-            when { expression { params.ACTION == 'destroy' } }
-            steps {
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']
-                ]) {
-                    dir('Ingress') {
-                        sh 'terraform destroy -auto-approve'
-                    }
-                }
-            }
-        }
+      }
     }
+
+    stage('Terraform Apply') {
+      when { expression { params.ACTION == 'apply' } }
+      steps {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+          dir('Ingress') {
+            sh '''
+              set -euxo pipefail
+              terraform apply -auto-approve tfplan
+            '''
+          }
+        }
+      }
+    }
+
+    stage('Configure kubeconfig') {
+      when { expression { params.ACTION == 'apply' } }
+      steps {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+          sh '''
+            set -euxo pipefail
+
+            # اكتب kubeconfig في مسار معروف بدل ~/.kube/config
+            aws eks update-kubeconfig \
+              --region "${AWS_DEFAULT_REGION}" \
+              --name "${CLUSTER_NAME}" \
+              --kubeconfig "${KUBECONFIG_PATH}"
+
+            # فحوصات سريعة
+            kubectl --kubeconfig "${KUBECONFIG_PATH}" version --short
+            kubectl --kubeconfig "${KUBECONFIG_PATH}" cluster-info
+            kubectl --kubeconfig "${KUBECONFIG_PATH}" get --raw /openapi/v2 | head -n 1
+            kubectl --kubeconfig "${KUBECONFIG_PATH}" auth can-i create namespace
+            kubectl --kubeconfig "${KUBECONFIG_PATH}" get nodes
+          '''
+        }
+      }
+    }
+
+    stage('Install Argo CD (Helm)') {
+      when { expression { params.ACTION == 'apply' } }
+      steps {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+          sh '''
+            set -euxo pipefail
+
+            # أنشئ namespace (لو validation لسه بتفشل لأي سبب، ممكن مؤقتًا تضيف --validate=false)
+            kubectl --kubeconfig "${KUBECONFIG_PATH}" create namespace argocd --dry-run=client -o yaml | \
+              kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f -
+
+            # Helm repo
+            helm repo add argo https://argoproj.github.io/argo-helm
+            helm repo update
+
+            # Install/Upgrade Argo CD
+            helm upgrade --install argocd argo/argo-cd \
+              --namespace argocd \
+              --create-namespace \
+              --wait \
+              --kubeconfig "${KUBECONFIG_PATH}"
+
+            # (اختياري) تأكيد أن الـ pods جاهزة
+            kubectl --kubeconfig "${KUBECONFIG_PATH}" -n argocd get pods
+          '''
+        }
+      }
+    }
+
+    stage('Uninstall Argo CD (before destroy)') {
+      when { expression { params.ACTION == 'destroy' } }
+      steps {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+          sh '''
+            set -euxo pipefail
+
+            # نضمن وجود kubeconfig قبل الحذف (لو الستيدج دي ممكن تتشغل مستقل)
+            aws eks update-kubeconfig \
+              --region "${AWS_DEFAULT_REGION}" \
+              --name "${CLUSTER_NAME}" \
+              --kubeconfig "${KUBECONFIG_PATH}"
+
+            helm uninstall argocd -n argocd --kubeconfig "${KUBECONFIG_PATH}" || true
+            kubectl --kubeconfig "${KUBECONFIG_PATH}" delete namespace argocd --wait=false || true
+          '''
+        }
+      }
+    }
+
+    stage('Terraform Destroy') {
+      when { expression { params.ACTION == 'destroy' } }
+      steps {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+          dir('Ingress') {
+            sh '''
+              set -euxo pipefail
+              terraform destroy -auto-approve
+            '''
+          }
+        }
+      }
+    }
+  }
 }
