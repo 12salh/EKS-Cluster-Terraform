@@ -13,8 +13,7 @@ pipeline {
         AWS_DEFAULT_REGION = 'us-east-1'
         TF_STATE_BUCKET   = 'nti-terraform-states-1'
         TF_STATE_KEY      = 'eks/nonprod/terraform.tfstate'
-        WORK_DIR          = 'Ingress'
-        CLUSTER_NAME      = 'nti-nonprod-eks'
+        EKS_CLUSTER_NAME  = 'nti-nonprod-eks'
     }
 
     stages {
@@ -30,32 +29,32 @@ pipeline {
 
         stage('Terraform Init') {
             steps {
-                dir("${WORK_DIR}") {
-                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
-                        sh """
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws_cred'
+                ]]) {
+                    dir('Ingress') {
+                        sh '''
                           terraform init \
                             -backend-config="bucket=${TF_STATE_BUCKET}" \
                             -backend-config="key=${TF_STATE_KEY}" \
                             -backend-config="region=${AWS_DEFAULT_REGION}"
-                        """
+                        '''
                     }
                 }
             }
         }
 
-        stage('Terraform Validate') {
-            steps {
-                dir("${WORK_DIR}") {
-                    sh 'terraform validate'
-                }
-            }
-        }
-
         stage('Terraform Plan') {
-            when { expression { params.ACTION == 'apply' } }
+            when {
+                expression { params.ACTION == 'apply' }
+            }
             steps {
-                dir("${WORK_DIR}") {
-                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws_cred'
+                ]]) {
+                    dir('Ingress') {
                         sh 'terraform plan -out=tfplan'
                     }
                 }
@@ -63,48 +62,59 @@ pipeline {
         }
 
         stage('Terraform Apply') {
-            when { expression { params.ACTION == 'apply' } }
+            when {
+                expression { params.ACTION == 'apply' }
+            }
             steps {
-                dir("${WORK_DIR}") {
-                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws_cred'
+                ]]) {
+                    dir('Ingress') {
                         sh 'terraform apply -auto-approve tfplan'
                     }
                 }
             }
         }
 
-        stage('Install Argo CD & Ingress') {
-            when { expression { params.ACTION == 'apply' } }
+        stage('Install Argo CD') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
             steps {
-                dir("${WORK_DIR}") {
-                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
-                        sh """
-                            # تحديث kubeconfig عشان kubectl يشتغل
-                            aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${CLUSTER_NAME}
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws_cred'
+                ]]) {
+                    dir('Ingress') {
+                        // تحديث kubeconfig للكلاستر المحدد
+                        sh 'aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${EKS_CLUSTER_NAME}'
 
-                            # إنشاء namespace Argo CD لو مش موجود
-                            kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+                        // تثبيت namespace Argo CD
+                        sh 'kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -'
 
-                            # تطبيق ملفات Argo CD manifests
-                            kubectl apply -f argocd-ingress.yaml
-
-                            # تثبيت أو تحديث Nginx Ingress عبر Helm
-                            helm upgrade --install nginx-ingress ingress-nginx --namespace ingress-nginx -f nginx-values.yaml
-                        """
+                        // تثبيت Argo CD
+                        sh 'kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml'
                     }
                 }
             }
         }
 
         stage('Terraform Destroy') {
-            when { expression { params.ACTION == 'destroy' } }
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
             steps {
-                dir("${WORK_DIR}") {
-                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws_cred'
+                ]]) {
+                    dir('Ingress') {
                         sh 'terraform destroy -auto-approve'
                     }
                 }
             }
         }
+
     }
 }
