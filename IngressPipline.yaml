@@ -7,21 +7,17 @@ pipeline {
             choices: ['apply', 'destroy'],
             description: 'Terraform Action'
         )
-        string(
-            name: 'CLUSTER_NAME',
-            defaultValue: 'nti-nonprod-eks',
-            description: 'EKS Cluster Name'
-        )
     }
 
     environment {
         AWS_DEFAULT_REGION = 'us-east-1'
         TF_STATE_BUCKET   = 'nti-terraform-states-1'
         TF_STATE_KEY      = 'eks/nonprod/terraform.tfstate'
+        CLUSTER_NAME      = 'nti-nonprod-eks' // ضع اسم الكلاستر هنا
+        WORK_DIR          = 'Ingress'
     }
 
     stages {
-
         stage('Checkout Code') {
             steps {
                 git(
@@ -33,18 +29,23 @@ pipeline {
 
         stage('Terraform Init') {
             steps {
-                withCredentials([[
-                    $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws_cred'
-                ]]) {
-                    dir('Ingress') {
-                        sh '''
-                          terraform init \
-                            -backend-config="bucket=${TF_STATE_BUCKET}" \
-                            -backend-config="key=${TF_STATE_KEY}" \
-                            -backend-config="region=${AWS_DEFAULT_REGION}"
-                        '''
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+                    dir("${WORK_DIR}") {
+                        sh """
+                            terraform init \
+                                -backend-config="bucket=${TF_STATE_BUCKET}" \
+                                -backend-config="key=${TF_STATE_KEY}" \
+                                -backend-config="region=${AWS_DEFAULT_REGION}"
+                        """
                     }
+                }
+            }
+        }
+
+        stage('Terraform Validate') {
+            steps {
+                dir("${WORK_DIR}") {
+                    sh 'terraform validate'
                 }
             }
         }
@@ -52,11 +53,8 @@ pipeline {
         stage('Terraform Plan') {
             when { expression { params.ACTION == 'apply' } }
             steps {
-                withCredentials([[
-                    $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws_cred'
-                ]]) {
-                    dir('Ingress') {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+                    dir("${WORK_DIR}") {
                         sh 'terraform plan -out=tfplan'
                     }
                 }
@@ -66,13 +64,34 @@ pipeline {
         stage('Terraform Apply') {
             when { expression { params.ACTION == 'apply' } }
             steps {
-                withCredentials([[
-                    $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws_cred'
-                ]]) {
-                    dir('Ingress') {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+                    dir("${WORK_DIR}") {
                         sh 'terraform apply -auto-approve tfplan'
                     }
+                }
+            }
+        }
+
+        stage('Setup Kubeconfig') {
+            when { expression { params.ACTION == 'apply' } }
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+                    sh "aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${CLUSTER_NAME}"
+                }
+            }
+        }
+
+        stage('Install Nginx Ingress via Helm') {
+            when { expression { params.ACTION == 'apply' } }
+            steps {
+                dir("${WORK_DIR}") {
+                    sh """
+                        helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+                        helm repo update
+                        helm upgrade --install nginx-ingress ingress-nginx/ingress-nginx \
+                            --namespace ingress-nginx --create-namespace \
+                            --wait
+                    """
                 }
             }
         }
@@ -80,32 +99,32 @@ pipeline {
         stage('Install Argo CD via Helm') {
             when { expression { params.ACTION == 'apply' } }
             steps {
-                withCredentials([[
-                    $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws_cred'
-                ]]) {
-                    sh '''
-                      aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${CLUSTER_NAME}
-                      kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-                      helm repo add argo https://argoproj.github.io/argo-helm
-                      helm repo update
-                      helm upgrade --install argocd argo/argo-cd --namespace argocd
-                    '''
+                dir("${WORK_DIR}") {
+                    sh """
+                        kubectl get namespace argocd || kubectl create namespace argocd
+                        helm repo add argo https://argoproj.github.io/argo-helm
+                        helm repo update
+                        helm upgrade --install argocd argo/argo-cd \
+                            --namespace argocd --create-namespace --wait
+                    """
                 }
             }
         }
 
-        stage('Uninstall Argo CD') {
+        stage('Uninstall Argo CD (before destroy)') {
             when { expression { params.ACTION == 'destroy' } }
             steps {
-                withCredentials([[
-                    $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws_cred'
-                ]]) {
-                    sh '''
-                      aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${CLUSTER_NAME}
-                      helm uninstall argocd --namespace argocd || echo "Argo CD not installed"
-                    '''
+                dir("${WORK_DIR}") {
+                    sh "helm uninstall argocd --namespace argocd || true"
+                }
+            }
+        }
+
+        stage('Uninstall Nginx Ingress (before destroy)') {
+            when { expression { params.ACTION == 'destroy' } }
+            steps {
+                dir("${WORK_DIR}") {
+                    sh "helm uninstall nginx-ingress --namespace ingress-nginx || true"
                 }
             }
         }
@@ -113,11 +132,8 @@ pipeline {
         stage('Terraform Destroy') {
             when { expression { params.ACTION == 'destroy' } }
             steps {
-                withCredentials([[
-                    $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws_cred'
-                ]]) {
-                    dir('Ingress') {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+                    dir("${WORK_DIR}") {
                         sh 'terraform destroy -auto-approve'
                     }
                 }
