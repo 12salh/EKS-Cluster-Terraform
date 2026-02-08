@@ -11,42 +11,33 @@ pipeline {
 
     environment {
         AWS_DEFAULT_REGION = 'us-east-1'
-        TF_STATE_BUCKET   = 'nti-terraform-states-1'
-        TF_STATE_KEY      = 'eks/nonprod/terraform.tfstate'
-        CLUSTER_NAME      = 'nti-nonprod-eks'   // حط اسم الكلاستر هنا
-        KUBECONFIG        = "${env.HOME}/.kube/config"
+        CLUSTER_NAME = 'nti-nonprod-eks'
+
+        TF_STATE_BUCKET = 'nti-terraform-states-1'
+        TF_STATE_KEY    = 'eks/nonprod/terraform.tfstate'
     }
 
     stages {
 
-        stage('Checkout Code') {
+        stage('Checkout') {
             steps {
-                git(
-                    url: 'https://github.com/12salh/EKS-Cluster-Terraform.git',
-                    branch: 'main'
-                )
+                checkout scm
             }
         }
 
         stage('Terraform Init') {
             steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']
+                ]) {
                     dir('Ingress') {
-                        sh """
-                            terraform init \
-                                -backend-config="bucket=${TF_STATE_BUCKET}" \
-                                -backend-config="key=${TF_STATE_KEY}" \
-                                -backend-config="region=${AWS_DEFAULT_REGION}"
-                        """
+                        sh '''
+                          terraform init -reconfigure \
+                            -backend-config="bucket=${TF_STATE_BUCKET}" \
+                            -backend-config="key=${TF_STATE_KEY}" \
+                            -backend-config="region=${AWS_DEFAULT_REGION}"
+                        '''
                     }
-                }
-            }
-        }
-
-        stage('Terraform Validate') {
-            steps {
-                dir('Ingress') {
-                    sh 'terraform validate'
                 }
             }
         }
@@ -54,7 +45,9 @@ pipeline {
         stage('Terraform Plan') {
             when { expression { params.ACTION == 'apply' } }
             steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']
+                ]) {
                     dir('Ingress') {
                         sh 'terraform plan -out=tfplan'
                     }
@@ -65,7 +58,9 @@ pipeline {
         stage('Terraform Apply') {
             when { expression { params.ACTION == 'apply' } }
             steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']
+                ]) {
                     dir('Ingress') {
                         sh 'terraform apply -auto-approve tfplan'
                     }
@@ -73,44 +68,56 @@ pipeline {
             }
         }
 
-        stage('Setup Kubeconfig') {
+        stage('Configure kubeconfig') {
             when { expression { params.ACTION == 'apply' } }
             steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
-                    sh """
-                        aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${CLUSTER_NAME}
-                        kubectl get nodes
-                    """
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']
+                ]) {
+                    sh '''
+                      aws eks update-kubeconfig \
+                        --region ${AWS_DEFAULT_REGION} \
+                        --name ${CLUSTER_NAME}
+
+                      kubectl get nodes
+                    '''
                 }
             }
         }
 
-        stage('Install Argo CD') {
+        stage('Install Argo CD (Helm)') {
             when { expression { params.ACTION == 'apply' } }
             steps {
-                sh """
-                    kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-                    helm repo add argo https://argoproj.github.io/argo-helm
-                    helm repo update
-                    helm upgrade --install argocd argo/argo-cd --namespace argocd
-                """
+                sh '''
+                  kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+
+                  helm repo add argo https://argoproj.github.io/argo-helm
+                  helm repo update
+
+                  helm upgrade --install argocd argo/argo-cd \
+                    --namespace argocd \
+                    --create-namespace \
+                    --wait
+                '''
             }
         }
 
         stage('Uninstall Argo CD (before destroy)') {
             when { expression { params.ACTION == 'destroy' } }
             steps {
-                sh """
-                    aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${CLUSTER_NAME}
-                    helm uninstall argocd --namespace argocd || echo 'Argo CD not found, skipping'
-                """
+                sh '''
+                  helm uninstall argocd -n argocd || true
+                  kubectl delete namespace argocd --wait=false || true
+                '''
             }
         }
 
         stage('Terraform Destroy') {
             when { expression { params.ACTION == 'destroy' } }
             steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']]) {
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws_cred']
+                ]) {
                     dir('Ingress') {
                         sh 'terraform destroy -auto-approve'
                     }
