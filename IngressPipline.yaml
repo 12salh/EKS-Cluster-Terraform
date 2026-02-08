@@ -7,13 +7,17 @@ pipeline {
             choices: ['apply', 'destroy'],
             description: 'Terraform Action'
         )
+        string(
+            name: 'CLUSTER_NAME',
+            defaultValue: 'nti-nonprod-eks',
+            description: 'EKS Cluster Name'
+        )
     }
 
     environment {
         AWS_DEFAULT_REGION = 'us-east-1'
         TF_STATE_BUCKET   = 'nti-terraform-states-1'
         TF_STATE_KEY      = 'eks/nonprod/terraform.tfstate'
-        EKS_CLUSTER_NAME  = 'nti-nonprod-eks'
     }
 
     stages {
@@ -46,9 +50,7 @@ pipeline {
         }
 
         stage('Terraform Plan') {
-            when {
-                expression { params.ACTION == 'apply' }
-            }
+            when { expression { params.ACTION == 'apply' } }
             steps {
                 withCredentials([[
                     $class: 'AmazonWebServicesCredentialsBinding',
@@ -62,9 +64,7 @@ pipeline {
         }
 
         stage('Terraform Apply') {
-            when {
-                expression { params.ACTION == 'apply' }
-            }
+            when { expression { params.ACTION == 'apply' } }
             steps {
                 withCredentials([[
                     $class: 'AmazonWebServicesCredentialsBinding',
@@ -77,33 +77,41 @@ pipeline {
             }
         }
 
-        stage('Install Argo CD') {
-            when {
-                expression { params.ACTION == 'apply' }
-            }
+        stage('Install Argo CD via Helm') {
+            when { expression { params.ACTION == 'apply' } }
             steps {
                 withCredentials([[
                     $class: 'AmazonWebServicesCredentialsBinding',
                     credentialsId: 'aws_cred'
                 ]]) {
-                    dir('Ingress') {
-                        // تحديث kubeconfig للكلاستر المحدد
-                        sh 'aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${EKS_CLUSTER_NAME}'
+                    sh '''
+                      aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${CLUSTER_NAME}
+                      kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+                      helm repo add argo https://argoproj.github.io/argo-helm
+                      helm repo update
+                      helm upgrade --install argocd argo/argo-cd --namespace argocd
+                    '''
+                }
+            }
+        }
 
-                        // تثبيت namespace Argo CD
-                        sh 'kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -'
-
-                        // تثبيت Argo CD
-                        sh 'kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml'
-                    }
+        stage('Uninstall Argo CD') {
+            when { expression { params.ACTION == 'destroy' } }
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws_cred'
+                ]]) {
+                    sh '''
+                      aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${CLUSTER_NAME}
+                      helm uninstall argocd --namespace argocd || echo "Argo CD not installed"
+                    '''
                 }
             }
         }
 
         stage('Terraform Destroy') {
-            when {
-                expression { params.ACTION == 'destroy' }
-            }
+            when { expression { params.ACTION == 'destroy' } }
             steps {
                 withCredentials([[
                     $class: 'AmazonWebServicesCredentialsBinding',
@@ -115,6 +123,5 @@ pipeline {
                 }
             }
         }
-
     }
 }
