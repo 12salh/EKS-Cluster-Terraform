@@ -81,21 +81,6 @@ pipeline {
             }
         }
 
-        stage('Install Nginx Ingress via Helm') {
-            when { expression { params.ACTION == 'apply' } }
-            steps {
-                dir("${WORK_DIR}") {
-                    sh """
-                        helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-                        helm repo update
-                        helm upgrade --install nginx-ingress ingress-nginx/ingress-nginx \
-                            --namespace ingress-nginx --create-namespace \
-                            --wait
-                    """
-                }
-            }
-        }
-
         stage('Install Argo CD via Helm') {
             when { expression { params.ACTION == 'apply' } }
             steps {
@@ -116,15 +101,6 @@ pipeline {
             steps {
                 dir("${WORK_DIR}") {
                     sh "helm uninstall argocd --namespace argocd || true"
-                }
-            }
-        }
-
-        stage('Uninstall Nginx Ingress (before destroy)') {
-            when { expression { params.ACTION == 'destroy' } }
-            steps {
-                dir("${WORK_DIR}") {
-                    sh "helm uninstall nginx-ingress --namespace ingress-nginx || true"
                 }
             }
         }
